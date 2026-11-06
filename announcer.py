@@ -22,7 +22,8 @@ STORES = {
     "Made-up Rules": 19253,
     "Playourgames Uden": 7828,
     "Side7": 8126,
-    "Spelkwartier": 4109
+    "Spelkwartier": 4109,
+    "Spel en Meer": 4115
 }
 
 HEADERS = {
@@ -33,6 +34,7 @@ HEADERS = {
 GAME = "CyberpunkTCG"
 
 def fetch_tournaments(hub_id: int) -> list[dict]:
+    now = datetime.now(timezone.utc)
     found = {}
     with httpx.Client(headers=HEADERS, timeout=15, follow_redirects=True,
                       cookies={"CookieConsent": "true"}) as client:
@@ -62,10 +64,13 @@ def fetch_tournaments(hub_id: int) -> list[dict]:
                     continue
                 if t.get("StatusDescription") == "Ended":
                     continue
+                start_dt = datetime.fromisoformat(t["StartDate"].replace("Z", "+00:00"))
+                if start_dt < now:
+                    continue  # not closed on Melee, but already in the past
                 found[t["ID"]] = {
                     "id": str(t["ID"]),
                     "name": t["Name"],
-                    "start": datetime.fromisoformat(t["StartDate"].replace("Z", "+00:00")),
+                    "start": start_dt,
                     "players": t.get("ParticipatingCount"),
                     "cap": t.get("PlayerCap"),
                     "entry": t.get("EntryFeeString") or t.get("EntryTypeDescription"),
@@ -155,7 +160,7 @@ def announce_store(store_name: str) -> None:
         time.sleep(1)
     print(f"Posted {len(embeds)} message(s) for {store_name}.")
 
-def post_all_to_discord(upcoming_only: bool = False) -> None:
+def post_all_to_discord() -> None:
     conn = init_db()
     now = datetime.now(timezone.utc)
     embeds = []
@@ -170,7 +175,7 @@ def post_all_to_discord(upcoming_only: bool = False) -> None:
         lines = []
         for tid, name, start, url, players, cap, entry in rows:
             dt = datetime.fromisoformat(start)
-            if upcoming_only and dt < now:
+            if dt < now:
                 continue
             ts = int(dt.timestamp())
             label = name or f"Tournament {tid}"
@@ -207,8 +212,9 @@ def post_all_to_discord(upcoming_only: bool = False) -> None:
     print(f"Posted {len(embeds)} message(s).")
 
 # DEV functions
-def show_db() -> None:
+def show_db(include_past: bool = False) -> None:
     conn = init_db()
+    now = datetime.now(timezone.utc)
 
     for store_name, hub_id in STORES.items():
         rows = conn.execute(
@@ -216,11 +222,13 @@ def show_db() -> None:
             "WHERE hub_id = ? ORDER BY start",
             (hub_id,),
         ).fetchall()
+        if not include_past:
+            rows = [r for r in rows if r[2] is None or datetime.fromisoformat(r[2]) >= now]
 
         print(f"{store_name}  [hub {hub_id}]")
         print("-" * 80)
         if not rows:
-            print("  (no tournaments stored)\n")
+            print("  (no tournaments stored)\n" if include_past else "  (nothing upcoming)\n")
             continue
 
         for tid, name, start, players, cap, entry in rows:
@@ -307,12 +315,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     import sys
-    if "--show" in sys.argv:
+    if "--show-all" in sys.argv:
+        show_db(include_past=True)
+    elif "--show" in sys.argv:
         show_db()
-    elif "--post-all" in sys.argv:
+    elif "--post-all" in sys.argv or "--post-upcoming" in sys.argv:
         post_all_to_discord()
-    elif "--post-upcoming" in sys.argv:
-        post_all_to_discord(upcoming_only=True)
     elif "--announce" in sys.argv:
         i = sys.argv.index("--announce")
         if i + 1 >= len(sys.argv):
